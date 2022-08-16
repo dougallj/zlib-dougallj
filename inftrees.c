@@ -8,6 +8,15 @@
 
 #define MAXBITS 15
 
+#ifdef __aarch64__
+#include <arm_neon.h>
+
+_Alignas(32) static uint8_t one[] = {
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+};
+#endif
+
 const char inflate_copyright[] =
    " inflate 1.2.8 Copyright 1995-2013 Mark Adler ";
 /*
@@ -45,6 +54,7 @@ unsigned short FAR *work;
     unsigned drop;              /* code bits to drop for sub-table */
     int left;                   /* number of prefix codes available */
     unsigned used;              /* code entries in table used */
+    unsigned rhuff;             /* Reversed huffman code */
     unsigned huff;              /* Huffman code */
     unsigned incr;              /* for incrementing code, index */
     unsigned fill;              /* index for replicating entries */
@@ -55,7 +65,7 @@ unsigned short FAR *work;
     const unsigned short FAR *base;     /* base value table to use */
     const unsigned short FAR *extra;    /* extra bits table to use */
     int end;                    /* use base and extra for symbol > end */
-    unsigned short count[MAXBITS+1];    /* number of codes of each length */
+    unsigned short count[MAXBITS+2];    /* number of codes of each length */
     unsigned short offs[MAXBITS+1];     /* offsets in table for each length */
     static const unsigned short lbase[31] = { /* Length codes 257..285 base */
         3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
@@ -104,10 +114,28 @@ unsigned short FAR *work;
      */
 
     /* accumulate lengths for codes (assumes lens[] all in 0..MAXBITS) */
+#ifdef __aarch64__
+    uint8x16_t s1 = vdupq_n_u8(0);
+    uint8x16_t s2 = vdupq_n_u8(0);
+
+    uint8_t *p = &one[16];
+    if (codes & 1) {
+        s1 = vld1q_u8(&p[-lens[0]]);
+    }
+    for (sym = codes & 1; sym < codes; sym += 2) {
+      s1 = vaddq_u8(s1, vld1q_u8(&p[-lens[sym]]));
+      s2 = vaddq_u8(s2, vld1q_u8(&p[-lens[sym+1]]));
+    }
+
+    count[0] = 0;
+    vst1q_u16(&count[1], vaddl_u8(vget_low_u8(s1), vget_low_u8(s2)));
+    vst1q_u16(&count[9], vaddl_high_u8(s1, s2));
+#else
     for (len = 0; len <= MAXBITS; len++)
         count[len] = 0;
     for (sym = 0; sym < codes; sym++)
         count[lens[sym]]++;
+#endif
 
     /* bound code lengths, force root to be within code lengths */
     root = *bits;
@@ -197,6 +225,7 @@ unsigned short FAR *work;
     }
 
     /* initialize state for loop */
+    rhuff = 0;                  /* starting code, reversed */
     huff = 0;                   /* starting code */
     sym = 0;                    /* starting code symbol */
     len = min;                  /* starting code length */
@@ -212,8 +241,89 @@ unsigned short FAR *work;
         (type == DISTS && used > ENOUGH_DISTS))
         return 1;
 
-    /* process all codes and make table entries */
+    /* process primary table codes and make entries */
+    int first = 0;
     for (;;) {
+        /* create table entry */
+        here.bits = (unsigned char)len;
+        if ((int)(work[sym]) < end) {
+            here.op = (unsigned char)0;
+            here.val = work[sym];
+        }
+        else if ((int)(work[sym]) > end) {
+            here.op = extra[work[sym]] & 16 ? here.bits | 16 : extra[work[sym]];
+            here.bits += extra[work[sym]] & 15;
+            here.val = base[work[sym]];
+        }
+        else {
+            here.op = (unsigned char)(32 + 64);         /* end of block */
+            here.val = 0;
+        }
+
+        /* replicate for those indices with low len bits equal to huff */
+        incr = 1U << len;
+        fill = 1U << curr;
+        min = fill;                 /* save offset to next table */
+        do {
+            fill -= incr;
+            next[huff + fill] = here;
+        } while (fill != 0);
+
+        /* backwards increment the len-bit code huff */
+#if defined(__clang__) && defined(__aarch64__)
+        rhuff += (0x80000000u >> (len - 1));
+        huff = __builtin_bitreverse32(rhuff);
+#else
+        rhuff += (0x8000u >> (len - 1));
+        huff = rhuff;
+        huff = ((huff & 0xAAAA) >>  1) | ((huff & 0x5555) << 1);
+        huff = ((huff & 0xCCCC) >>  2) | ((huff & 0x3333) << 2);
+        huff = ((huff & 0xF0F0) >>  4) | ((huff & 0x0F0F) << 4);
+        huff = ((huff & 0xFF00) >>  8) | ((huff & 0x00FF) << 8);
+#endif
+
+        /* go to next symbol, update count, len */
+        sym++;
+        if (sym-first == count[len]) {
+            if (len == max) goto done;
+            len = lens[work[sym]];
+            first = sym;
+            if (len > root) break;
+        }
+    }
+
+    /* process subtables */
+    for (;;) {
+        /* create new sub-table if needed */
+        if ((huff & mask) != low) {
+            /* if first time, transition to sub-tables */
+            if (drop == 0)
+                drop = root;
+
+            /* increment past last table */
+            next += min;            /* here min is 1 << curr */
+
+            /* determine length of next table */
+            curr = len - drop;
+            left = (1 << curr) - (count[len] - (sym-first));
+            while (curr + drop < max && left > 0) {
+               curr++;
+               left = (left << 1) - count[curr + drop];
+            }
+
+            /* check for enough space */
+            used += 1U << curr;
+            if ((type == LENS && used > ENOUGH_LENS) ||
+                (type == DISTS && used > ENOUGH_DISTS))
+                return 1;
+
+            /* point entry in root table to sub-table */
+            low = huff & mask;
+            (*table)[low].op = (unsigned char)curr;
+            (*table)[low].bits = (unsigned char)root;
+            (*table)[low].val = (unsigned short)(next - *table);
+        }
+
         /* create table entry */
         here.bits = (unsigned char)(len - drop);
         if ((int)(work[sym]) < end) {
@@ -240,56 +350,28 @@ unsigned short FAR *work;
         } while (fill != 0);
 
         /* backwards increment the len-bit code huff */
-        incr = 1U << (len - 1);
-        while (huff & incr)
-            incr >>= 1;
-        if (incr != 0) {
-            huff &= incr - 1;
-            huff += incr;
-        }
-        else
-            huff = 0;
+#if defined(__clang__) && defined(__aarch64__)
+        rhuff += (0x80000000u >> (len - 1));
+        huff = __builtin_bitreverse32(rhuff);
+#else
+        rhuff += (0x8000u >> (len - 1));
+        huff = rhuff;
+        huff = ((huff & 0xAAAA) >>  1) | ((huff & 0x5555) << 1);
+        huff = ((huff & 0xCCCC) >>  2) | ((huff & 0x3333) << 2);
+        huff = ((huff & 0xF0F0) >>  4) | ((huff & 0x0F0F) << 4);
+        huff = ((huff & 0xFF00) >>  8) | ((huff & 0x00FF) << 8);
+#endif
 
         /* go to next symbol, update count, len */
         sym++;
-        if (--(count[len]) == 0) {
+        if (sym-first == count[len]) {
             if (len == max) break;
             len = lens[work[sym]];
-        }
-
-        /* create new sub-table if needed */
-        if (len > root && (huff & mask) != low) {
-            /* if first time, transition to sub-tables */
-            if (drop == 0)
-                drop = root;
-
-            /* increment past last table */
-            next += min;            /* here min is 1 << curr */
-
-            /* determine length of next table */
-            curr = len - drop;
-            left = (int)(1 << curr);
-            while (curr + drop < max) {
-                left -= count[curr + drop];
-                if (left <= 0) break;
-                curr++;
-                left <<= 1;
-            }
-
-            /* check for enough space */
-            used += 1U << curr;
-            if ((type == LENS && used > ENOUGH_LENS) ||
-                (type == DISTS && used > ENOUGH_DISTS))
-                return 1;
-
-            /* point entry in root table to sub-table */
-            low = huff & mask;
-            (*table)[low].op = (unsigned char)curr;
-            (*table)[low].bits = (unsigned char)root;
-            (*table)[low].val = (unsigned short)(next - *table);
+            first = sym;
         }
     }
 
+  done:
     /* fill in remaining table entry if code is incomplete (guaranteed to have
        at most one remaining entry, since if the code is incomplete, the
        maximum code length that was allowed to get this far is one bit) */
