@@ -31,6 +31,10 @@
 #include "inffast_chunk.h"
 #include "chunkcopy.h"
 
+#ifdef __aarch64__
+#define USE_AARCH64_ASM
+#endif
+
 #ifdef ASMINF
 #  pragma message("Assembler code may have bugs -- use at your own risk")
 #else
@@ -121,6 +125,7 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
     unsigned len;               /* match length, unused bytes */
     unsigned dist;              /* match distance */
     unsigned char FAR *from;    /* where to copy match from */
+    unsigned here32;            /* table entry as integer */
 
     /* copy state to local variables */
     state = (struct inflate_state FAR *)strm->state;
@@ -144,6 +149,19 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
     lmask = (1U << state->lenbits) - 1;
     dmask = (1U << state->distbits) - 1;
 
+#ifdef USE_AARCH64_ASM
+#define TABLE_LOAD(table, index) do { \
+        asm volatile ("ldr %w0, [%1, %2, lsl #2]" : "=r"(here32) \
+                      : "r"(table), "r"(index)); \
+        memcpy(&here, &here32, sizeof(code)); \
+    } while (0)
+#else
+#define TABLE_LOAD(table, index) do { \
+        memcpy(&here32, &(table)[(index)], sizeof(code)); \
+        memcpy(&here, &here32, sizeof(code)); \
+    } while (0)
+#endif
+
     /* decode literals and length/distances until end-of-block or not enough
        input data or output space */
     do {
@@ -159,7 +177,7 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
             bits += 8;
 #endif
         }
-        here = lcode[hold & lmask];
+        TABLE_LOAD(lcode, hold & lmask);
       dolen:
         op = (unsigned)(here.bits);
         hold >>= op;
@@ -202,7 +220,7 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
                 bits += 8;
 #endif
             }
-            here = dcode[hold & dmask];
+            TABLE_LOAD(dcode, hold & dmask);
           dodist:
             op = (unsigned)(here.bits);
             hold >>= op;
@@ -315,7 +333,7 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
                 }
             }
             else if ((op & 64) == 0) {          /* 2nd level distance code */
-                here = dcode[here.val + (hold & ((1U << op) - 1))];
+                TABLE_LOAD(dcode, here.val + (hold & ((1U << op) - 1)));
                 goto dodist;
             }
             else {
@@ -325,7 +343,7 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
             }
         }
         else if ((op & 64) == 0) {              /* 2nd level length code */
-            here = lcode[here.val + (hold & ((1U << op) - 1))];
+            TABLE_LOAD(lcode, here.val + (hold & ((1U << op) - 1)));
             goto dolen;
         }
         else if (op & 32) {                     /* end-of-block */
