@@ -199,13 +199,13 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
         hold >>= here.bits;
         bits -= here32;
       preloaded:
-        if (here.op == 0) {
+        if (likely(here.op == 0)) {
             *out++ = (unsigned char)(here.val);
             TABLE_LOAD(lcode, hold & lmask);
             old = hold;
             hold >>= here.bits;
             bits -= here32;
-            if (here.op == 0) {
+            if (likely(here.op == 0)) {
                 *out++ = (unsigned char)(here.val);
                 TABLE_LOAD(lcode, hold & lmask);
                 old = hold;
@@ -215,20 +215,20 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
         }
       dolen:
         op = (unsigned)(here.op);
-        if (op == 0) {                          /* literal */
+        if (likely(op == 0)) {                  /* literal */
             Tracevv((stderr, here.val >= 0x20 && here.val < 0x7f ?
                     "inflate:         literal '%c'\n" :
                     "inflate:         literal 0x%02x\n", here.val));
             *out++ = (unsigned char)(here.val);
         }
-        else if (op & 16) {                     /* length base */
+        else if (likely(op & 16)) {             /* length base */
             len = (unsigned)(here.val);
             len += ((old & ~((uint64_t)-1 << here.bits)) >> (op & 15));
             Tracevv((stderr, "inflate:         length %u\n", len));
             TABLE_LOAD(dcode, hold & dmask);
             /* we have two fast-path loads: 10+10 + 15+5 = 40,
                but we may need to refill here in the worst case */
-            if ((bits & 63) < 15 + 13) {
+            if (unlikely((bits & 63) < 15 + 13)) {
                 REFILL();
             }
           dodist:
@@ -236,11 +236,11 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
             hold >>= here.bits;
             bits -= here32;
             op = (unsigned)(here.op);
-            if (op & 16) {                      /* distance base */
+            if (likely(op & 16)) {              /* distance base */
                 dist = (unsigned)(here.val);
                 dist += ((old & ~((uint64_t)-1 << here.bits)) >> (op & 15));
 #ifdef INFLATE_STRICT
-                if (dist > dmax) {
+                if (unlikely(dist > dmax)) {
                     strm->msg = (char *)"invalid distance too far back";
                     state->mode = BAD;
                     break;
@@ -330,10 +330,11 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
                        stay within 258 bytes of `out`.
                      */
                     out = chunkcopy_lapped_relaxed(out, dist, len);
+
                 }
 
               chunk_continue:
-                if (in < last && out < end)
+                if (likely(in < last && out < end))
                    goto preloaded;
 
               chunk_break:
@@ -342,7 +343,7 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
                 bits += here32;
                 break;
             }
-            else if ((op & 64) == 0) {          /* 2nd level distance code */
+            else if (likely((op & 64) == 0)) {  /* 2nd level distance code */
                 TABLE_LOAD(dcode, here.val + (hold & ((1U << op) - 1)));
                 goto dodist;
             }
@@ -352,14 +353,14 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
                 break;
             }
         }
-        else if ((op & 64) == 0) {              /* 2nd level length code */
+        else if (likely((op & 64) == 0)) {      /* 2nd level length code */
             TABLE_LOAD(lcode, here.val + (hold & ((1U << op) - 1)));
             old = hold;
             hold >>= here.bits;
             bits -= here32;
             goto dolen;
         }
-        else if (op & 32) {                     /* end-of-block */
+        else if (likely(op & 32)) {             /* end-of-block */
             Tracevv((stderr, "inflate:         end of block\n"));
             state->mode = TYPE;
             break;
