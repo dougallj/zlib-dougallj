@@ -31,10 +31,6 @@
 #include "inffast_chunk.h"
 #include "chunkcopy.h"
 
-#ifdef __aarch64__
-#define USE_AARCH64_ASM
-#endif
-
 #ifdef ASMINF
 #  pragma message("Assembler code may have bugs -- use at your own risk")
 #else
@@ -154,16 +150,6 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
     lmask = (1U << state->lenbits) - 1;
     dmask = (1U << state->distbits) - 1;
 
-#ifdef USE_AARCH64_ASM
-#define REFILL() do { \
-        hold |= read64le(in) << bits; \
-        asm volatile ("add %0, %0, #7" : "+r"(in)); \
-        uint64_t tmp; \
-        asm volatile ("ubfx %w0, %w1, #3, #3" : "=r"(tmp) : "r"(bits)); \
-        in -= tmp; \
-        bits |= 56; \
-    } while (0)
-#else
     /* This is extremely latency sensitive, so empty inline assembly blocks are
        used to prevent the compiler from reassociating. */
 #define REFILL() do { \
@@ -175,20 +161,11 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
         in -= tmp; \
         bits |= 56; \
     } while (0)
-#endif
 
-#ifdef USE_AARCH64_ASM
-#define TABLE_LOAD(table, index) do { \
-        asm volatile ("ldr %w0, [%1, %2, lsl #2]" : "=r"(here32) \
-                      : "r"(table), "r"(index)); \
-        memcpy(&here, &here32, sizeof(code)); \
-    } while (0)
-#else
 #define TABLE_LOAD(table, index) do { \
         memcpy(&here32, &(table)[(index)], sizeof(code)); \
         memcpy(&here, &here32, sizeof(code)); \
     } while (0)
-#endif
 
     /* decode literals and length/distances until end-of-block or not enough
        input data or output space */
