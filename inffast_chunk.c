@@ -154,6 +154,29 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
     dmask = (1U << state->distbits) - 1;
 
 #ifdef USE_AARCH64_ASM
+#define REFILL() do { \
+        hold |= read64le(in) << bits; \
+        asm volatile ("add %0, %0, #7" : "+r"(in)); \
+        uint64_t tmp; \
+        asm volatile ("ubfx %w0, %w1, #3, #3" : "=r"(tmp) : "r"(bits)); \
+        in -= tmp; \
+        bits |= 56; \
+    } while (0)
+#else
+    /* This is extremely latency sensitive, so empty inline assembly blocks are
+       used to prevent the compiler from reassociating. */
+#define REFILL() do { \
+        hold |= read64le(in) << bits; \
+        in += 7; \
+        asm volatile ("" : "+r"(in)); \
+        uint64_t tmp = ((bits >> 3) & 7); \
+        asm volatile ("" : "+r"(tmp)); \
+        in -= tmp; \
+        bits |= 56; \
+    } while (0)
+#endif
+
+#ifdef USE_AARCH64_ASM
 #define TABLE_LOAD(table, index) do { \
         asm volatile ("ldr %w0, [%1, %2, lsl #2]" : "=r"(here32) \
                       : "r"(table), "r"(index)); \
@@ -169,19 +192,20 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
     /* decode literals and length/distances until end-of-block or not enough
        input data or output space */
     do {
-        if (bits < 15) {
-#ifdef INFLATE_CHUNK_READ_64LE
-            hold |= read64le(in) << bits;
-            in += 6;
-            bits += 48;
-#else
-            hold += (unsigned long)(*in++) << bits;
-            bits += 8;
-            hold += (unsigned long)(*in++) << bits;
-            bits += 8;
-#endif
-        }
+        REFILL();
         TABLE_LOAD(lcode, hold & lmask);
+        if (here.op == 0) {
+            *out++ = (unsigned char)(here.val);
+            hold >>= here.bits;
+            bits -= here.bits;
+            TABLE_LOAD(lcode, hold & lmask);
+            if (here.op == 0) {
+                *out++ = (unsigned char)(here.val);
+                hold >>= here.bits;
+                bits -= here.bits;
+                TABLE_LOAD(lcode, hold & lmask);
+            }
+        }
       dolen:
         op = (unsigned)(here.bits);
         hold >>= op;
@@ -197,33 +221,11 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
             len = (unsigned)(here.val);
             op &= 15;                           /* number of extra bits */
             if (op) {
-                if (bits < op) {
-#ifdef INFLATE_CHUNK_READ_64LE
-                    hold |= read64le(in) << bits;
-                    in += 6;
-                    bits += 48;
-#else
-                    hold += (unsigned long)(*in++) << bits;
-                    bits += 8;
-#endif
-                }
                 len += (unsigned)hold & ((1U << op) - 1);
                 hold >>= op;
                 bits -= op;
             }
             Tracevv((stderr, "inflate:         length %u\n", len));
-            if (bits < 15) {
-#ifdef INFLATE_CHUNK_READ_64LE
-                hold |= read64le(in) << bits;
-                in += 6;
-                bits += 48;
-#else
-                hold += (unsigned long)(*in++) << bits;
-                bits += 8;
-                hold += (unsigned long)(*in++) << bits;
-                bits += 8;
-#endif
-            }
             TABLE_LOAD(dcode, hold & dmask);
           dodist:
             op = (unsigned)(here.bits);
@@ -233,19 +235,10 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
             if (op & 16) {                      /* distance base */
                 dist = (unsigned)(here.val);
                 op &= 15;                       /* number of extra bits */
+                /* we have two fast-path loads: 10+10 + 15+5 + 15 = 55,
+                   but we may need to refill here in the worst case */
                 if (bits < op) {
-#ifdef INFLATE_CHUNK_READ_64LE
-                    hold |= read64le(in) << bits;
-                    in += 6;
-                    bits += 48;
-#else
-                    hold += (unsigned long)(*in++) << bits;
-                    bits += 8;
-                    if (bits < op) {
-                        hold += (unsigned long)(*in++) << bits;
-                        bits += 8;
-                    }
-#endif
+                    REFILL();
                 }
                 dist += (unsigned)hold & ((1U << op) - 1);
 #ifdef INFLATE_STRICT
