@@ -221,7 +221,8 @@ unsigned short FAR *work;
             here.val = work[sym];
         }
         else if ((int)(work[sym]) > end) {
-            here.op = (unsigned char)(extra[work[sym]]);
+            here.op = extra[work[sym]] & 16 ? here.bits | 16 : extra[work[sym]];
+            here.bits += extra[work[sym]] & 15;
             here.val = base[work[sym]];
         }
         else {

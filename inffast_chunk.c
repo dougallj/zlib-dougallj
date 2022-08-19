@@ -130,6 +130,7 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
     unsigned dist;              /* match distance */
     unsigned char FAR *from;    /* where to copy match from */
     unsigned here32;            /* table entry as integer */
+    inflate_holder_t old;       /* look-behind buffer for extra bits */
 
     /* copy state to local variables */
     state = (struct inflate_state FAR *)strm->state;
@@ -208,6 +209,7 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
         }
       dolen:
         op = (unsigned)(here.bits);
+        old = hold;
         hold >>= op;
         bits -= op;
         op = (unsigned)(here.op);
@@ -219,28 +221,23 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
         }
         else if (op & 16) {                     /* length base */
             len = (unsigned)(here.val);
-            op &= 15;                           /* number of extra bits */
-            if (op) {
-                len += (unsigned)hold & ((1U << op) - 1);
-                hold >>= op;
-                bits -= op;
-            }
+            len += ((old & ~((uint64_t)-1 << here.bits)) >> (op & 15));
             Tracevv((stderr, "inflate:         length %u\n", len));
             TABLE_LOAD(dcode, hold & dmask);
+            /* we have two fast-path loads: 10+10 + 15+5 = 40,
+               but we may need to refill here in the worst case */
+            if (bits < 15 + 13) {
+                REFILL();
+            }
           dodist:
             op = (unsigned)(here.bits);
+            old = hold;
             hold >>= op;
             bits -= op;
             op = (unsigned)(here.op);
             if (op & 16) {                      /* distance base */
                 dist = (unsigned)(here.val);
-                op &= 15;                       /* number of extra bits */
-                /* we have two fast-path loads: 10+10 + 15+5 + 15 = 55,
-                   but we may need to refill here in the worst case */
-                if (bits < op) {
-                    REFILL();
-                }
-                dist += (unsigned)hold & ((1U << op) - 1);
+                dist += ((old & ~((uint64_t)-1 << here.bits)) >> (op & 15));
 #ifdef INFLATE_STRICT
                 if (dist > dmax) {
                     strm->msg = (char *)"invalid distance too far back";
@@ -248,8 +245,6 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
                     break;
                 }
 #endif
-                hold >>= op;
-                bits -= op;
                 Tracevv((stderr, "inflate:         distance %u\n", dist));
                 op = (unsigned)(out - beg);     /* max distance in output */
                 if (dist > op) {                /* see if copy from window */

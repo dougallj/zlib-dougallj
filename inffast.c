@@ -93,6 +93,7 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
     unsigned len;               /* match length, unused bytes */
     unsigned dist;              /* match distance */
     unsigned char FAR *from;    /* where to copy match from */
+    unsigned long old;          /* look-behind buffer for extra bits */
 
     /* copy state to local variables */
     state = (struct inflate_state FAR *)strm->state;
@@ -127,6 +128,11 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
         here = lcode[hold & lmask];
       dolen:
         op = (unsigned)(here.bits);
+        if (bits < op) {
+            hold += (unsigned long)(PUP(in)) << bits;
+            bits += 8;
+        }
+        old = hold;
         hold >>= op;
         bits -= op;
         op = (unsigned)(here.op);
@@ -138,16 +144,7 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
         }
         else if (op & 16) {                     /* length base */
             len = (unsigned)(here.val);
-            op &= 15;                           /* number of extra bits */
-            if (op) {
-                if (bits < op) {
-                    hold += (unsigned long)(PUP(in)) << bits;
-                    bits += 8;
-                }
-                len += (unsigned)hold & ((1U << op) - 1);
-                hold >>= op;
-                bits -= op;
-            }
+            len += ((old & ~((uint64_t)-1 << here.bits)) >> (op & 15));
             Tracevv((stderr, "inflate:         length %u\n", len));
             if (bits < 15) {
                 hold += (unsigned long)(PUP(in)) << bits;
@@ -158,21 +155,21 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
             here = dcode[hold & dmask];
           dodist:
             op = (unsigned)(here.bits);
+            if (bits < op) {
+                hold += (unsigned long)(PUP(in)) << bits;
+                bits += 8;
+                if (bits < op) {
+                    hold += (unsigned long)(PUP(in)) << bits;
+                    bits += 8;
+                }
+            }
+            old = hold;
             hold >>= op;
             bits -= op;
             op = (unsigned)(here.op);
             if (op & 16) {                      /* distance base */
                 dist = (unsigned)(here.val);
-                op &= 15;                       /* number of extra bits */
-                if (bits < op) {
-                    hold += (unsigned long)(PUP(in)) << bits;
-                    bits += 8;
-                    if (bits < op) {
-                        hold += (unsigned long)(PUP(in)) << bits;
-                        bits += 8;
-                    }
-                }
-                dist += (unsigned)hold & ((1U << op) - 1);
+                dist += ((old & ~((uint64_t)-1 << here.bits)) >> (op & 15));
 #ifdef INFLATE_STRICT
                 if (dist > dmax) {
                     strm->msg = (char *)"invalid distance too far back";
@@ -180,8 +177,6 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
                     break;
                 }
 #endif
-                hold >>= op;
-                bits -= op;
                 Tracevv((stderr, "inflate:         distance %u\n", dist));
                 op = (unsigned)(out - beg);     /* max distance in output */
                 if (dist > op) {                /* see if copy from window */
