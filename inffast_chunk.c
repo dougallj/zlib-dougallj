@@ -195,23 +195,25 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
     do {
         REFILL();
         TABLE_LOAD(lcode, hold & lmask);
+        old = hold;
+        hold >>= here.bits;
+        bits -= here32;
+      preloaded:
         if (here.op == 0) {
             *out++ = (unsigned char)(here.val);
-            hold >>= here.bits;
-            bits -= here.bits;
             TABLE_LOAD(lcode, hold & lmask);
+            old = hold;
+            hold >>= here.bits;
+            bits -= here32;
             if (here.op == 0) {
                 *out++ = (unsigned char)(here.val);
-                hold >>= here.bits;
-                bits -= here.bits;
                 TABLE_LOAD(lcode, hold & lmask);
+                old = hold;
+                hold >>= here.bits;
+                bits -= here32;
             }
         }
       dolen:
-        op = (unsigned)(here.bits);
-        old = hold;
-        hold >>= op;
-        bits -= op;
         op = (unsigned)(here.op);
         if (op == 0) {                          /* literal */
             Tracevv((stderr, here.val >= 0x20 && here.val < 0x7f ?
@@ -226,14 +228,13 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
             TABLE_LOAD(dcode, hold & dmask);
             /* we have two fast-path loads: 10+10 + 15+5 = 40,
                but we may need to refill here in the worst case */
-            if (bits < 15 + 13) {
+            if ((bits & 63) < 15 + 13) {
                 REFILL();
             }
           dodist:
-            op = (unsigned)(here.bits);
             old = hold;
-            hold >>= op;
-            bits -= op;
+            hold >>= here.bits;
+            bits -= here32;
             op = (unsigned)(here.op);
             if (op & 16) {                      /* distance base */
                 dist = (unsigned)(here.val);
@@ -245,6 +246,13 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
                     break;
                 }
 #endif
+                /* preload and shift for next iteration */
+                REFILL();
+                TABLE_LOAD(lcode, hold & lmask);
+                old = hold;
+                hold >>= here.bits;
+                bits -= here32;
+
                 Tracevv((stderr, "inflate:         distance %u\n", dist));
                 op = (unsigned)(out - beg);     /* max distance in output */
                 if (dist > op) {                /* see if copy from window */
@@ -254,14 +262,14 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
                             strm->msg =
                                 (char *)"invalid distance too far back";
                             state->mode = BAD;
-                            break;
+                            goto chunk_break;
                         }
 #ifdef INFLATE_ALLOW_INVALID_DISTANCE_TOOFAR_ARRR
                         if (len <= op - whave) {
                             do {
                                 *out++ = 0;
                             } while (--len);
-                            continue;
+                            goto chunk_continue;
                         }
                         len -= op - whave;
                         do {
@@ -272,7 +280,7 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
                             do {
                                 *out++ = *from++;
                             } while (--len);
-                            continue;
+                            goto chunk_continue;
                         }
 #endif
                     }
@@ -323,6 +331,16 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
                      */
                     out = chunkcopy_lapped_relaxed(out, dist, len);
                 }
+
+              chunk_continue:
+                if (in < last && out < end)
+                   goto preloaded;
+
+              chunk_break:
+                /* undo pre-shift */
+                hold = old;
+                bits += here32;
+                break;
             }
             else if ((op & 64) == 0) {          /* 2nd level distance code */
                 TABLE_LOAD(dcode, here.val + (hold & ((1U << op) - 1)));
@@ -336,6 +354,9 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
         }
         else if ((op & 64) == 0) {              /* 2nd level length code */
             TABLE_LOAD(lcode, here.val + (hold & ((1U << op) - 1)));
+            old = hold;
+            hold >>= here.bits;
+            bits -= here32;
             goto dolen;
         }
         else if (op & 32) {                     /* end-of-block */
@@ -349,6 +370,8 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
             break;
         }
     } while (in < last && out < end);
+
+    bits &= 63;
 
     /* return unused bytes (on entry, bits < 8, so in won't go too far back) */
     len = bits >> 3;

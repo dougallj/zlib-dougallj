@@ -37,12 +37,15 @@
    we can safely call inflate_fast() with only one up-front bounds check. One
    length/distance code pair (15 bits for the length code, 5 bits for length
    extra, 15 bits for the distance code, 13 bits for distance extra) requires
-   reading up to 48 input bits (6 bytes). The wide input data reading option
-   requires a little endian machine, and reads 64 input bits (8 bytes).
+   reading up to 48 input bits (6 bytes).
+
+   Chunked decoding, with two 10-bit fastpath cases, can read (10 + 10 + 15
+   + 5 + 15 + 13) / 8 = 8.5 bytes, followed by an 8-byte preload for the next
+   iteration, giving 17 bytes.
 */
 #ifdef INFLATE_CHUNK_READ_64LE
 #undef INFLATE_FAST_MIN_INPUT
-#define INFLATE_FAST_MIN_INPUT 8
+#define INFLATE_FAST_MIN_INPUT 17
 #endif
 
 void ZLIB_INTERNAL inflate_fast_chunk_ OF((z_streamp strm, unsigned start));
