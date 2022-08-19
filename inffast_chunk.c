@@ -39,6 +39,10 @@
 #  pragma message("Assembler code may have bugs -- use at your own risk")
 #else
 
+#ifndef INFLATE_CHUNK_READ_64LE
+#  error INFLATE_CHUNK_SIMD_* requires INFLATE_CHUNK_READ_64LE
+#endif
+
 /*
    Decode literal, length, and distance codes and write out the resulting
    literal and match bytes until either not enough input or output is
