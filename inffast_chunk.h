@@ -48,4 +48,9 @@
 #define INFLATE_FAST_MIN_INPUT 17
 #endif
 
+/* INFLATE_FAST_MIN_OUTPUT is usually 258, but we can copy two fast-path bytes
+   as well */
+#undef INFLATE_FAST_MIN_OUTPUT
+#define INFLATE_FAST_MIN_OUTPUT 260
+
 void ZLIB_INTERNAL inflate_fast_chunk_ OF((z_streamp strm, unsigned start));
