@@ -493,6 +493,11 @@ void FAR *out_desc;
             /* get a literal, length, or end-of-block code */
             for (;;) {
                 here = state->lencode[BITS(state->lenbits)];
+                if (here.op & 16) {
+                    int size = here.op & 15;
+                    here.op = 16 | (here.bits - size);
+                    here.bits = size;
+                }
                 if ((unsigned)(here.bits) <= bits) break;
                 PULLBYTE();
             }
@@ -501,6 +506,11 @@ void FAR *out_desc;
                 for (;;) {
                     here = state->lencode[last.val +
                             (BITS(last.bits + last.op) >> last.bits)];
+                    if (here.op & 16) {
+                        int size = here.op & 15;
+                        here.op = 16 | (here.bits - size);
+                        here.bits = size;
+                    }
                     if ((unsigned)(last.bits + here.bits) <= bits) break;
                     PULLBYTE();
                 }
@@ -547,6 +557,11 @@ void FAR *out_desc;
             /* get distance code */
             for (;;) {
                 here = state->distcode[BITS(state->distbits)];
+                if (here.op & 16) {
+                    int size = here.op & 15;
+                    here.op = 16 | (here.bits - size);
+                    here.bits = size;
+                }
                 if ((unsigned)(here.bits) <= bits) break;
                 PULLBYTE();
             }
@@ -555,6 +570,11 @@ void FAR *out_desc;
                 for (;;) {
                     here = state->distcode[last.val +
                             (BITS(last.bits + last.op) >> last.bits)];
+                    if (here.op & 16) {
+                        int size = here.op & 15;
+                        here.op = 16 | (here.bits - size);
+                        here.bits = size;
+                    }
                     if ((unsigned)(last.bits + here.bits) <= bits) break;
                     PULLBYTE();
                 }
