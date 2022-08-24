@@ -39,13 +39,12 @@
    extra, 15 bits for the distance code, 13 bits for distance extra) requires
    reading up to 48 input bits (6 bytes).
 
-   Chunked decoding, with two 10-bit fastpath cases, can read (10 + 10 + 15
-   + 5 + 15 + 13) / 8 = 8.5 bytes, followed by an 8-byte preload for the next
-   iteration, giving 17 bytes.
+   For chunked decoding use a hopefully-pesimistic bound of two worst-case
+   advances: 7 + 7, plus one 8-byte refill.
 */
 #ifdef INFLATE_CHUNK_READ_64LE
 #undef INFLATE_FAST_MIN_INPUT
-#define INFLATE_FAST_MIN_INPUT 17
+#define INFLATE_FAST_MIN_INPUT 22
 #endif
 
 /* INFLATE_FAST_MIN_OUTPUT is usually 258, but we can copy two fast-path bytes
