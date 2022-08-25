@@ -167,11 +167,20 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
         memcpy(&here, &here32, sizeof(code)); \
     } while (0)
 
+    if (bits < 10) {
+        REFILL();
+    }
+
     /* decode literals and length/distances until end-of-block or not enough
        input data or output space */
     do {
-        REFILL();
+        uint64_t next_hold = hold | (read64le(in) << bits);
+        in += 7;
+        uint64_t tmp = ((bits >> 3) & 7);
+        in -= tmp;
+        bits |= 56;
         TABLE_LOAD(lcode, hold & lmask);
+        hold = next_hold;
         old = hold;
         hold >>= here.bits;
         bits -= here32;
@@ -223,9 +232,20 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
                     break;
                 }
 #endif
+                if (unlikely((bits & 63) < 10)) {
+                    REFILL();
+                }
+
                 /* preload and shift for next iteration */
-                REFILL();
+                uint64_t next_hold = hold | (read64le(in) << bits);
+                in += 7;
+                asm volatile ("" : "+r"(in));
+                uint64_t tmp = ((bits >> 3) & 7);
+                asm volatile ("" : "+r"(tmp));
+                in -= tmp;
+                bits |= 56;
                 TABLE_LOAD(lcode, hold & lmask);
+                hold = next_hold;
                 old = hold;
                 hold >>= here.bits;
                 bits -= here32;
