@@ -39,31 +39,6 @@
 #  error INFLATE_CHUNK_SIMD_* requires INFLATE_CHUNK_READ_64LE
 #endif
 
-#ifdef __aarch64__
-#include <arm_neon.h>
-static uint8x16_t distance_table[] = {
-   {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
-   {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-   {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1},
-   {0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0},
-   {0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3},
-   {0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0},
-   {0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3},
-   {0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1},
-   {0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7},
-   {0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 1, 2, 3, 4, 5, 6},
-   {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5},
-   {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4},
-   {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3},
-   {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0, 1, 2},
-   {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0, 1},
-   {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0},
-   {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
-};
-
-static uint64_t distance_offsets[] = {16, 16, 16, 15, 16, 15, 12, 14, 16, 9, 10, 11, 12, 13, 14, 15, 16};
-#endif
-
 /*
    Decode literal, length, and distance codes and write out the resulting
    literal and match bytes until either not enough input or output is
@@ -347,39 +322,12 @@ unsigned start;         /* inflate()'s starting value for strm->avail_out */
                 else {
                     /* Whole reference is in range of current output.  No
                        range checks are necessary because we start with room
-                       for at least 296 bytes of output, so unroll and roundoff
+                       for at least 258 bytes of output, so unroll and roundoff
                        operations can write beyond `out+len` so long as they
-                       stay within 296 bytes of `out`.
+                       stay within 258 bytes of `out`.
                      */
-#ifdef __aarch64__
-                    uint8_t *p = out - dist;
-                    if (dist <= 16) {
-                       uint8x16_t rep = vqtbl1q_u8(vld1q_u8(p), distance_table[dist]);
-                       uint64_t size = distance_offsets[dist];
-                       uint8_t *o = out;
-                       int64_t n = len;
-                       do {
-                          vst1q_u8(o, rep);
-                          vst1q_u8(o+size, rep);
-                          vst1q_u8(o+size*2, rep);
-                          o += size*3;
-                          n -= size*3;
-                       } while (n > 0);
-                       out += len;
-                    } else {
-                       int64_t i = 0;
-                       do {
-                          vst1q_u8(out + i, vld1q_u8(p + i));
-                          vst1q_u8(out + i+16, vld1q_u8(p + i+16));
-                          vst1q_u8(out + i+32, vld1q_u8(p + i+32));
-                          i += 48;
-                       } while (i < len);
-                       out += len;
-                    }
-#else
                     out = chunkcopy_lapped_relaxed(out, dist, len);
 
-#endif
                 }
 
               chunk_continue:
